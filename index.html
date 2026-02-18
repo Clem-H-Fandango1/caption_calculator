@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Caption Calculator v1.4</title>
+
+<style>
+body{
+  font-family: ui-monospace, Consolas, "Courier New", monospace;
+  margin:20px;
+  max-width:1100px;
+}
+h1{margin-bottom:4px;}
+small{color:#666;}
+.section{
+  border:1px solid #ccc;
+  padding:12px;
+  margin-bottom:15px;
+  border-radius:6px;
+}
+label{font-weight:bold;}
+input{margin:4px 0 10px 0;padding:6px 8px;width:320px;}
+button{margin:6px 6px 6px 0;padding:6px 12px;}
+table{border-collapse:collapse;margin-top:15px;width:100%;}
+th,td{border:1px solid #ccc;padding:6px;font-size:12px;}
+th{background:#eee;}
+.info{font-size:13px;color:#555;line-height:1.5;margin-bottom:15px;}
+</style>
+</head>
+<body>
+
+<h1>Caption Calculator <small>v1.4</small></h1>
+
+<div class="info">
+A simple tool for creating a caption list for the sales versions of BOL.<br><br>
+
+In the Avid timeline, create a V14 and add markers on every graphic saying 
+"£200", "Timer", "GERMAN TOWNS" etc – they don't need to be added at the exact 
+start of the graphic – anywhere on top will do.<br><br>
+
+Then export a CMX_3600 EDL of multiple tracks from the List Tool – 
+so you will end up with SEQ_NAME_V1.edl, SEQ_NAME_V2.edl all the way up to V14.<br><br>
+
+Import these using the browser button and hit <b>Process</b>.<br>
+If you need a downloadable file hit <b>Download CSV</b> – this will import into Excel.
+</div>
+
+<div class="section">
+<label>Upload all EDL files (programme + clean):</label><br>
+<input type="file" id="files" multiple>
+</div>
+
+<div class="section">
+
+<label>Clean Elements Start TC (default 10:45:00:00)</label><br>
+<input type="text" id="cleanStart" value="10:45:00:00"><br>
+
+<label>Base Picture Tracks (comma list)</label><br>
+<input type="text" id="baseTracks" value="1,2"><br>
+
+<label>Caption Track</label><br>
+<input type="text" id="captionTrack" value="4"><br>
+
+<label>Timer Track</label><br>
+<input type="text" id="timerTrack" value="6"><br>
+
+<label>Money Track</label><br>
+<input type="text" id="moneyTrack" value="8"><br>
+
+<label>Marker Track</label><br>
+<input type="text" id="markerTrack" value="14"><br>
+
+</div>
+
+<button onclick="processFiles()">Process</button>
+<button onclick="downloadCSV()">Download CSV</button>
+<button onclick="downloadMarkerEDL()">Download Marker EDL</button>
+
+<div id="status" style="margin-top:10px;color:#444;"></div>
+<div id="output"></div>
+
+<script>
+const FPS = 25;
+let results = [];
+
+function isTC(tc){
+  return /^\d\d:\d\d:\d\d:\d\d$/.test(tc);
+}
+
+function tcToFrames(tc){
+  const [h,m,s,f] = tc.split(":").map(Number);
+  return (((h*60+m)*60+s)*FPS)+f;
+}
+
+function framesToTC(fr){
+  let h=Math.floor(fr/(3600*FPS));
+  fr%=3600*FPS;
+  let m=Math.floor(fr/(60*FPS));
+  fr%=60*FPS;
+  let s=Math.floor(fr/FPS);
+  let f=fr%FPS;
+  return [h,m,s,f].map(v=>String(v).padStart(2,"0")).join(":");
+}
+
+function detectTrack(name){
+  const m=name.toLowerCase().match(/v0*([0-9]+)/);
+  return m?parseInt(m[1]):null;
+}
+
+function parseEDL(text){
+  const lines=text.split(/\r?\n/);
+  const re=/\bV\s+C\s+(\d\d:\d\d:\d\d:\d\d)\s+(\d\d:\d\d:\d\d:\d\d)\s+(\d\d:\d\d:\d\d:\d\d)\s+(\d\d:\d\d:\d\d:\d\d)/;
+  let out=[];
+  for(const l of lines){
+    const m=l.match(re);
+    if(!m)continue;
+    out.push({
+      recIn:m[3],
+      recInF:tcToFrames(m[3]),
+      recOutF:tcToFrames(m[4])
+    });
+  }
+  return out;
+}
+
+function merge(events){
+  events.sort((a,b)=>a.recInF-b.recInF);
+  let merged=[];
+  for(const e of events){
+    if(!merged.length) merged.push(e);
+    else{
+      let last=merged[merged.length-1];
+      if(e.recInF===last.recOutF){
+        last.recOutF=e.recOutF;
+      }else{
+        merged.push(e);
+      }
+    }
+  }
+  return merged;
+}
+
+async function readFile(file){
+  return new Promise(r=>{
+    const fr=new FileReader();
+    fr.onload=e=>r(e.target.result);
+    fr.readAsText(file);
+  });
+}
+
+async function processFiles(){
+  results=[];
+  document.getElementById("status").innerText="";
+
+  const files=document.getElementById("files").files;
+  if(!files.length){
+    document.getElementById("status").innerText="No files selected.";
+    return;
+  }
+
+  const captionTrack=parseInt(document.getElementById("captionTrack").value);
+  const timerTrack=parseInt(document.getElementById("timerTrack").value);
+  const moneyTrack=parseInt(document.getElementById("moneyTrack").value);
+
+  let gfx=[];
+
+  for(const f of files){
+    const t=detectTrack(f.name);
+    if([captionTrack,timerTrack,moneyTrack].includes(t)){
+      const txt=await readFile(f);
+      gfx=gfx.concat(parseEDL(txt));
+    }
+  }
+
+  gfx=merge(gfx);
+
+  for(const g of gfx){
+    const outInc=g.recOutF-1;
+    results.push({
+      type:"Creative Graphic",
+      progIn:g.recIn,
+      progOut:framesToTC(outInc),
+      duration:framesToTC(outInc-g.recInF+1)
+    });
+  }
+
+  buildTable();
+  document.getElementById("status").innerText="Processed "+results.length+" graphics.";
+}
+
+function buildTable(){
+  let html="<table><tr><th>Type</th><th>Prog In</th><th>Prog Out</th><th>Duration</th></tr>";
+  for(const r of results){
+    html+=`<tr><td>${r.type}</td><td>${r.progIn}</td><td>${r.progOut}</td><td>${r.duration}</td></tr>`;
+  }
+  html+="</table>";
+  document.getElementById("output").innerHTML=html;
+}
+
+function downloadCSV(){
+  if(!results.length) return;
+  let csv="Type,Prog In,Prog Out,Duration\n";
+  for(const r of results){
+    csv+=`${r.type},${r.progIn},${r.progOut},${r.duration}\n`;
+  }
+  const blob=new Blob(["\uFEFF"+csv],{type:"text/csv;charset=utf-8"});
+  const a=document.createElement("a");
+  a.href=URL.createObjectURL(blob);
+  a.download="Caption_Register.csv";
+  a.click();
+}
+
+function downloadMarkerEDL(){
+  if(!results.length) return;
+  let edl="TITLE: CAPTION_MARKERS\nFCM: NON-DROP FRAME\n\n";
+  let count=1;
+  for(const r of results){
+    const num=String(count).padStart(3,"0");
+    edl+=`${num}  AX       V     C        ${r.progIn} ${r.progIn} ${r.progIn} ${r.progIn}\n`;
+    count++;
+  }
+  const blob=new Blob([edl],{type:"text/plain"});
+  const a=document.createElement("a");
+  a.href=URL.createObjectURL(blob);
+  a.download="Caption_Markers.edl";
+  a.click();
+}
+</script>
+
+</body>
+</html>
